@@ -25,7 +25,8 @@ import           Serokell.Data.Memory.Units (Byte, memory)
 import           Pos.Binary.Class (biSize)
 import           Pos.Chain.Block (BlockHeader (..), GenesisBlock,
                      HasSlogGState (..), HeaderHash, MainBlock, MainBody,
-                     headerHash, mkGenesisBlock, mkMainBlock)
+                     genHeaderPrevBlock, headerHash, mkGenesisBlock,
+                     mkMainBlock)
 import qualified Pos.Chain.Block as BC
 import           Pos.Chain.Delegation (DelegationVar, DlgPayload (..),
                      ProxySKBlockInfo)
@@ -251,6 +252,23 @@ createMainBlockAndApply genesisConfig txpConfig sId pske =
 -- MainBlock creation
 ----------------------------------------------------------------------------
 
+getTipHeaderNoEbb ::
+       forall ctx m.
+       ( MonadCreateBlock ctx m
+       )
+    => m (Maybe BlockHeader)
+getTipHeaderNoEbb = do
+    era <- getConsensusEra
+    tipHeader <- DB.getTipHeader
+    case era of
+        Original -> pure $ Just tipHeader
+        OBFT _   -> case tipHeader of
+            BlockHeaderMain _      -> pure $ Just tipHeader
+            BlockHeaderGenesis gbh -> do
+                let prevBlockHash :: HeaderHash
+                    prevBlockHash = gbh ^. genHeaderPrevBlock
+                DB.getHeader prevBlockHash
+
 -- | Create a new main block for the given slot on top of our
 -- tip. This function assumes that lock on block application is taken
 -- (hence 'Internal' suffix). It doesn't apply or verify created
@@ -265,11 +283,14 @@ createMainBlockInternal ::
     -> ProxySKBlockInfo
     -> m (Either Text MainBlock)
 createMainBlockInternal genesisConfig sId pske = do
-    tipHeader <- DB.getTipHeader
-    logInfoS $ sformat msgFmt tipHeader
-    canCreateBlock k sId tipHeader >>= \case
-        Left reason -> pure (Left reason)
-        Right () -> runExceptT (createMainBlockFinish tipHeader)
+    maybeTipHeader <- getTipHeaderNoEbb
+    case maybeTipHeader of
+        Nothing -> pure (Left "Failed to retrieve tip header")
+        Just tipHeader -> do
+            logInfoS $ sformat msgFmt tipHeader
+            canCreateBlock k sId tipHeader >>= \case
+                Left reason -> pure (Left reason)
+                Right () -> runExceptT (createMainBlockFinish tipHeader)
   where
     k = configBlkSecurityParam genesisConfig
     msgFmt = "We are trying to create main block, our tip header is\n"%build
