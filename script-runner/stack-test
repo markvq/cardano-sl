@@ -2,9 +2,9 @@
 
 # usage: ./stack-test test4.2
 
-set -e
-set -x
+set -e -u -x
 
+export SCRIPT=$1
 
 unameOut="$(uname -s)"
 case "${unameOut}" in
@@ -16,10 +16,19 @@ case "${unameOut}" in
 esac
 echo "We are on a ${machine} machine"
 
-if [ "${machine}" == "Darwin" ]; then
+if test "${machine}" == "Darwin" ; then
   EXTRA_GHC_OPTIONS="--ghc-options=-optl-Wl,-dead_strip_dylibs"
 else
   EXTRA_GHC_OPTIONS=""
+fi
+
+# Kill all existing cardano-node-simple processes. If there are processes
+# still running from previous runs of this script, the test will fail if
+# we don't kill them first.
+# Using the full name does not work, but this does.
+targets=$(ps | grep cardano-node-si | sed 's/ .*//')
+if test -n "${targets}" ; then
+  kill -INT ${targets}
 fi
 
 pushd ..
@@ -27,23 +36,29 @@ stack build $EXTRA_GHC_OPTIONS cardano-sl-script-runner cardano-sl-node cardano-
 export PATH=$(realpath $(stack path --local-install-root)/bin):$PATH
 popd
 
-export SCRIPT=$1
-
 CFG=$(realpath ../lib/configuration.yaml)
 LOGCFG=$(realpath ./log-config.yaml)
 TOPO=$(realpath ./topology-local.yaml)
 POLFILE=$(realpath ../scripts/policies/policy_script-runner.yaml)
 
-if [ "${machine}" == "Darwin" ]; then
-  T=$(mktemp -d -t testrun)
+if test "${machine}" == "Darwin" ; then
+  tmpdir=$(mktemp -d -t testrun)
 else
-  T=$(mktemp -d -p . testrun-XXXXXX)
+  tmpdir=$(mktemp -d -p . testrun-XXXXXX)
 fi
 
-echo "Temp directory: $T"
-cd $T
-mkdir poc-state
+echo "Temp directory: $tmpdir"
+cd $tmpdir
+mkdir test-state
 
-testcases --configuration-file $CFG --log-console-off --db-path poc-state/db --keyfile secret.key --log-config $LOGCFG --logs-prefix poc-state/logs --topology $TOPO --no-brickui --policies $POLFILE
+testcases --log-console-off --no-brickui --configuration-file $CFG \
+  --db-path test-state/db --keyfile secret.key --log-config $LOGCFG \
+  --logs-prefix test-state/logs --topology $TOPO --policies $POLFILE
 
-egrep -r --color=always "Processing of proposal|We'll request data for key Tagged|Ignoring data|Proposal .* is confirmed" poc-state/relay-stdout-0
+egrep --color=always \
+        "Processing of proposal|We'll request data for key Tagged|Ignoring data|Proposal .* is confirmed" \
+        test-state/relay-stdout-0
+
+# Kill the current process (the shell script) and all its child processes.
+echo "Killing all child processes"
+kill -INT 0 > /dev/null
