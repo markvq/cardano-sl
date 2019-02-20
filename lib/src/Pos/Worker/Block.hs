@@ -21,13 +21,13 @@ import qualified System.Metrics.Label as Label
 import           System.Random (randomRIO)
 
 import           Pos.Chain.Block (BlockHeader (..), HasBlockConfiguration,
-                     criticalCQ, criticalCQBootstrap, fixedTimeCQSec, gbHeader,
-                     lsiFlatSlotId, networkDiameter, nonCriticalCQ,
-                     nonCriticalCQBootstrap, scCQFixedMonitorState,
-                     scCQOverallMonitorState, scCQkMonitorState,
-                     scCrucialValuesLabel, scDifficultyMonitorState,
-                     scEpochMonitorState, scGlobalSlotMonitorState,
-                     scLocalSlotMonitorState)
+                     blockHeaderHash, criticalCQ, criticalCQBootstrap,
+                     fixedTimeCQSec, gbHeader, lsiFlatSlotId, networkDiameter,
+                     nonCriticalCQ, nonCriticalCQBootstrap,
+                     scCQFixedMonitorState, scCQOverallMonitorState,
+                     scCQkMonitorState, scCrucialValuesLabel,
+                     scDifficultyMonitorState, scEpochMonitorState,
+                     scGlobalSlotMonitorState, scLocalSlotMonitorState)
 import           Pos.Chain.Delegation (ProxySKBlockInfo)
 import           Pos.Chain.Genesis as Genesis (Config (..),
                      configBlkSecurityParam, configEpochSlots,
@@ -41,7 +41,7 @@ import           Pos.Core (BlockCount, ChainDifficulty, EpochIndex (..),
                      getSlotIndex, kEpochSlots, localSlotIndexFromEnum,
                      localSlotIndexMinBound, slotIdF, slotIdSucc,
                      unflattenSlotId)
-import           Pos.Core.Chrono (OldestFirst (..))
+import           Pos.Core.Chrono (NewestFirst (..), OldestFirst (..))
 import           Pos.Core.Conc (delay)
 import           Pos.Core.JsonLog (CanJsonLog (..))
 import           Pos.Core.Reporting (HasMisbehaviorMetrics, MetricMonitor (..),
@@ -50,9 +50,12 @@ import           Pos.Crypto (ProxySecretKey (pskDelegatePk))
 import           Pos.DB (gsIsBootstrapEra)
 import           Pos.DB.Block (calcChainQualityFixedTime, calcChainQualityM,
                      calcOverallChainQuality, createGenesisBlockAndApply,
-                     createMainBlockAndApply, lrcSingleShot, slogGetLastSlots)
+                     createMainBlockAndApply, getBlund, lrcSingleShot,
+                     normalizeMempool, rollbackBlocks, slogGetLastSlots)
 import qualified Pos.DB.BlockIndex as DB
 import           Pos.DB.Delegation (getDlgTransPsk, getPskByIssuer)
+-- import           Pos.DB.GState.Lock (Priority (..),
+--                      withStateLockNoMetrics)
 import qualified Pos.DB.Lrc as LrcDB (getLeadersForEpoch)
 import           Pos.DB.Lrc.OBFT (getSlotLeaderObft)
 import           Pos.DB.Update (getAdoptedBV, getAdoptedBVData, getConsensusEra)
@@ -167,6 +170,7 @@ blockCreator genesisConfig txpConfig slotId diffusion = do
             whenEpochBoundaryObft (siEpoch slotId) tipHeader (\ei -> do
                 logDebug $ "blockCreator OBFT: running lrcSingleShot"
                 lrcSingleShot genesisConfig ei)
+            dropObftEbb genesisConfig txpConfig
             blockCreatorObft genesisConfig txpConfig slotId diffusion
   where
     whenEpochBoundaryObft ::
@@ -212,6 +216,34 @@ blockCreatorObft genesisConfig txpConfig (slotId@SlotId {..}) diffusion = do
   where
     logOnEpochFS = if siSlot == localSlotIndexMinBound then logInfoS else logDebugS
     logOnEpochF = if siSlot == localSlotIndexMinBound then logInfo else logDebug
+
+dropObftEbb ::
+       forall ctx m.
+       ( BlockWorkMode ctx m
+       )
+    => Genesis.Config
+    -> TxpConfiguration
+    -> m ()
+dropObftEbb genesisConfig txpConfig = do
+    -- not sure if everything needs to run inside StateLock
+    logDebug $ "dropObftEbb: we are starting"
+    tipHeader <- DB.getTipHeader
+    logDebug $ sformat ("dropObftEbb: tipHeader: ("%shown%").")
+                       tipHeader
+    case tipHeader of
+        BlockHeaderMain _      -> pure ()
+        BlockHeaderGenesis _   -> do
+            logDebug $ "GO TIME!!!"
+            mbEbbBlund <- getBlund (configGenesisHash genesisConfig)
+                                   (blockHeaderHash tipHeader)
+            case mbEbbBlund of
+                Nothing -> error "unable to get blund for EBB"
+                Just ebbBlund -> do
+                    let blunds = NewestFirst (ebbBlund :| [])
+                    rollbackBlocks genesisConfig blunds
+                    normalizeMempool genesisConfig txpConfig
+                    -- withStateLockNoMetrics HighPriority $ \_ ->
+                    --     normalizeMempool genesisConfig txpConfig
 
 blockCreatorOriginal
     :: ( BlockWorkMode ctx m
