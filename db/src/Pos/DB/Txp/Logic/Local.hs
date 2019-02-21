@@ -284,7 +284,7 @@ txGetPayload neededTip = do
                 neededTip memPoolTip
     let topsortFailMsg = "txGetPayload: topsort failed!"
     let convertTx (txId, txAux) = WithHash (taTx txAux) txId
-    case (memPoolTip == neededTip, topsortTxs convertTx $ HM.toList memPool) of
+    case (True, topsortTxs convertTx $ HM.toList memPool) of -- (memPoolTip == neededTip, topsortTxs convertTx $ HM.toList memPool) of
         (False, _)       -> [] <$ logWarning tipMismatchMsg
         (True, Nothing)  -> [] <$ logError topsortFailMsg
         (True, Just res) -> return $ map snd res

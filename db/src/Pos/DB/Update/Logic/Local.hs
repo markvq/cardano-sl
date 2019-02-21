@@ -379,8 +379,8 @@ usPreparePayload genesisBvd _neededTip slotId@SlotId{..} = do
         -- If slot doesn't match, we can't provide payload for this slot.
         if | msSlot /= slotId -> def <$
                logWarning (sformat slotMismatchFmt msSlot slotId)
-           | msTip /= neededTip -> def <$
-               logWarning (sformat tipMismatchFmt msTip neededTip)
+           -- | msTip /= neededTip -> def <$
+           --     logWarning (sformat tipMismatchFmt msTip neededTip)
            | otherwise -> do
                -- Here we remove proposals which don't have enough
                -- positive stake for inclusion into payload.
